@@ -79,7 +79,7 @@ function MermaidContent({ chart }: { chart: string }) {
         dangerouslySetInnerHTML={{ __html: svg }}
       />
       <Dialog open={isFullscreen} onOpenChange={setIsFullscreen}>
-        <DialogContent className="sm:max-w-[95vw] sm:w-[95vw] max-h-[90vh] w-fit overflow-auto">
+        <DialogContent className="sm:max-w-[99vw] sm:w-[99vw] max-h-[99vh] w-fit overflow-auto">
           <DialogTitle className="sr-only">Mermaid Diagram</DialogTitle>
           <div
             ref={(container) => {
