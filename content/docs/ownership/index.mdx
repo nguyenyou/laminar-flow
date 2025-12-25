@@ -1,0 +1,130 @@
+---
+title: Ownership
+description: Ownership is a pattern for managing resources.
+---
+
+## Ownership
+
+Alright, this is it. By now you've read enough to have many questions about how ownership works. This assumes you've read all the docs above, but to recap the core problem that ownership solves:
+
+* Adding an `Observer` to the lazily evaluated `Observable` is a leaky operation. That is, these resources will not be garbage collected even if the observable and the observer are both unreachable to _user_ code. This is because the observable's parent observables will keep an internal reference to it for as long as it has observers.
+* Therefore, without Ownership you would have needed to remember to remove the observers that you added when the observers are no longer needed.
+* But doing that manually is insane, you will eventually forget and cause memory leaks and undesired behaviour. You should not need to take out your own garbage in a garbage collected language.
+
+If any of the above does not make sense, the rest of this section might be confusing. Make sure you at least understand the entirety of the [Laziness](#laziness) section before proceeding.
+
+Without further ado:
+
+**Subscription** is a resource that must be killed in order to release memory or prevent some other leak. You can get it by calling `observable.addObserver(observer)`, `writeBus.addSource(stream)`, or other similar methods that all take an implicit `owner` param.
+
+Every Subscription has an **Owner**. An Owner is an object that keeps track of its subscriptions and knows when to kill them, and kills them _when it's time_ (determined at its sole discretion). Airstream does not offer any concrete Owner classes (aside from the very basic `ManualOwner`), just the base trait. Unless you use [Dynamic Ownership](#dynamic-ownership), you need to instantiate (and thus implement) your own Owner-s.
+
+For example, until v0.8, my reactive UI library [Laminar](https://github.com/raquo/Laminar)'s `ReactiveElement` (a wrapper class for managing a JS DOM Element) used to implement `Owner`. When a `ReactiveElement` was discarded (unmounted from the DOM), it would kill all of its `subscriptions`, i.e. all the Subscriptions that were bound to its lifetime. That would remove the observers that those subscriptions installed on the observables, stopping them if they have no other observers. Note: Laminar switched to [Dynamic Ownership](#dynamic-ownership) in v0.8 (more on that later).
+
+When creating a Subscription, you can perform whatever leaky operations you wanted, and just provide the `cleanup` method to perform any required cleanup.
+
+Subscriptions are bound to a specific Owner upon the creation of the Subscription, and this link stays unchanged for the lifetime of the Subscription.
+
+Subscriptions are normally killed _by their Owner_, but you can also `.kill()` the subscription manually. The Owner will be notified about this via `owner.onKilledExternally(subscription)` so that it can drop the reference to the killed `subscription` from its list.
+
+Killing the same Subscription more than once throws an exception, don't do it.
+
+Built-in Owner carefully tracks a list of its subscriptions, making sure to call the right hooks, and create and dispose the right references for memory management. If you extend Owner and change that logic, memory management of that owner and its subscriptions is on you. Generally you shouldn't need to mess with any of that logic though, just make sure to call `killSubscriptions` when it's time.
+
+
+### Ownership & Memory Management
+
+In broad terms, ownership solves memory leaks by tying the lifecycle of Subscriptions which would be otherwise hard to track manually to the lifecycle of an Owner which is expected to be tracked automatically by a UI library like Laminar.
+
+In practice, Airstream's memory management has no magic to it. It uses Javascript's standard garbage collection, same as the rest of your Scala.js code. You just need to understand what references what, and the documentation here explains it.
+
+For example, a Subscription created by `observable.addObserver` method keeps references to both the Observable and the Observer (via the function passed as its `cleanup` param). That means that if you're keeping a reference to a Subscription, you're also keeping those references. Given that the Subscription has a `kill` method that lets you remove the observer from the observable, the presence of these references should be obvious. So like I said – no magic, you just need to internalize the basic ideas of lazy observables, just like you've already internalized the basic ideas of classes and functions.
+
+
+### OneTimeOwner
+
+The basic `Owner` trait provides a high degree of flexibility, and therefore lacks some behaviour that you might expect in Owners.
+
+For example, you can kill an `Owner` multiple times. Every time you do, its subscriptions will be killed, and the list of subscriptions cleared, but the `Owner` will remain usable after that, letting you add more subscriptions and kill them again later.
+
+If you want an Owner that can only be killed once, and does not let you add subscriptions to it after it was killed, use the `OneTimeOwner` class instead. DynamicOwner below uses OneTimeOwner, and that is how Laminar provides element Owners that can not be used after the element is unmounted and its owner is killed.
+
+If you try to create a subscription that uses a OneTimeOwner, the subscription will be killed immediately, and `OneTimeOwner`'s `onAccessAfterKilled` callback will be fired. You can throw in that callback, then subscription initialization will throw too.
+
+Note that the subscription itself does not contain any activation logic (i.e. what needs to happen when subscription is activated), that user-provided logic is external to subscription initialization, and is typically run **before** the subscription is initialized, so before `OneTimeOwner` can prevent that from happening. So when try to use a dead OneTimeOwner, instead of completely ignoring the effective payload of the subscription, unless you take special measures, it will still execute, but the subscription will be cancelled and cleaned up immediately. But if the subscription's payload was to e.g. make a network request, you can't put that back in the bottle.
+
+Bottom line, you should not be deliberately sending events to dead `OneTimeOwner`-s. They just fix what otherwise could be a memory leak, not completely prevent your code from running. They report the error so that you can fix your code that's doing this.
+
+
+### ManualOwner
+
+The basic `Owner` trait also doesn't allow external code to kill it, because some owners are supposed to manage themselves. All you need to overcome that is expose the `killSubscriptions` method to the public, or just use the `ManualOwner` class that does this. 
+
+
+### Dynamic Ownership
+
+Dynamic Ownership is not a replacement for standard Ownership described above. Rather, it is a self-contained feature built on top of regular Ownership. No APIs in Airstream itself require Dynamic Ownership, it is intended to be consumed by the user or by other libraries depending on Airstream.
+
+The premise of Dynamic Ownership is similar to that of regular ownership: you can create `DynamicSubscription`-s owned by `DynamicOwner`-s. Here is what's different:
+
+Regular `Subscription`-s can never recover from being `kill()`-ed, whereas `DynamicSubscription`-s can be activated and deactivated, and then activated again, and so on, as many times as their `DynamicOwner` wants. For example:
+
+```scala
+val stream: EventStream[Int] = ???
+val observer: Observer[Int] = ???
+ 
+val dynOwner = new DynamicOwner
+ 
+val dynSub = DynamicSubscription.unsafe(
+  dynOwner,
+  activate = (owner: Owner) => stream.addObserver(observer)(owner)
+)
+ 
+// Run dynSub's activate method and save the resulting non-dynamic Subscription
+dynOwner.activate()
+ 
+// Kill the regular Subscription that we saved 
+dynOwner.deactivate()
+ 
+// Run dynSub's activate method again, obtaining a new Subscription
+dynOwner.activate()
+ 
+// Kill the new Subscription that we saved 
+dynOwner.deactivate()
+```
+
+Every time a `DynamicOwner` is `activate()`-d, it creates a new `OneTimeOwner`, and uses it to `activate` every `DynamicSubscription` that it owns. It saves the resulting non-dynamic `Subscription`, which the `DynamicOwner` later `kills()` when it's `deactivate()`-d.
+
+Now you can see how this integrates with regular ownership. Anything that requires a non-dynamic `Owner` produces a `Subscription`. So to create a `DynamicSubscription` you need to provide an `activate` method that does this. That could be a call to `addObserver`, `addSource`, etc.
+
+As a result, we have a dynamic owner that can add or remove `observer` from `stream` at any time. In Laminar starting with v0.8 every ReactiveElement has a `DynamicOwner`. When the element is mounted, that owner is activated, activating all dynamic subscriptions using a newly created non-dynamic owner. Then when the element is later unmounted, those subscriptions are deactivated, removing observers from observables, sources from event buses, etc.
+
+Previously in Laminar v0.7 every ReactiveElement used to extend the non-dynamic `Owner`, so once it was unmounted, all the subscriptions were killed forever, so if the user re-mounted that element, its subscriptions would not have come back to life. But now that Laminar uses Dynamic Ownership, you can re-mount previously unmounted elements, and their dynamic subscriptions will spring back to life.
+
+Note that a `DynamicSubscription` is not automatically activated upon creation. Its DynamicOwner controls its activation and deactivation. You can still permanently `kill()` a DynamicSubscription manually – it will be deactivated if it's currently active, and removed from its DynamicOwner.
+
+#### Dynamic Ownership & Memory Management
+
+I created Dynamic Ownership specifically to solve this long-standing Laminar [memory management issue](https://github.com/raquo/Laminar/issues/33): if a non-dynamic Subscription is created when ReactiveElement is initialized, and is killed when that element is unmounted, what happens to elements that get initialized but are never mounted into the DOM? That's right, their subscriptions are never killed (because they are technically never unmounted) and so they are essentially never garbage collected.
+
+Laminar v0.8 had to fix this by creating `Subscription`-s every time the element is mounted, and killing them when the element was unmounted. Long story short, Dynamic Ownership is exactly this, slightly generalized for wider use.
+
+There is really nothing special in Dynamic Ownership memory management. It's just a helper to create and destroy subscriptions repeatedly. In practice DynamicSubscription's activate method generally contains the same references that `Subscription`'s cleanup method would, so it's all the same considerations as before.
+
+#### Transferable Subscription
+
+What, a helper for subscription helpers? Yes, indeed. This one behaves like a `DynamicSubscription` that lets you transfer it from one active `DynamicOwner` to another active `DynamicOwner` without deactivating and re-activating the subscription.
+
+The API is simple:
+
+```scala
+class TransferableSubscription(
+  activate: () => Unit,
+  deactivate: () => Unit
+) { 
+  def setOwner(nextOwner: DynamicOwner): Unit
+  def clearOwner(): Unit
+}
+```
+
+Note that you don't get access to `Owner` in `activate`. This is the tradeoff required to achieve this flexibility safely. `TransferableSubscription` is useful in very specific cases when you only care about continuity of active ownership, such as when moving an element from one mounted parent to another mounted parent in Laminar (you wouldn't expect Unmount / Mount events to fire in this case).
