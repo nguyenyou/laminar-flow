@@ -19,27 +19,6 @@ With a state machine, **invalid states become unrepresentable**.
 
 This implementation uses **singleton `case object`s** for states (zero allocation on transitions) while keeping mutable data in separate fields. Best of both worlds:
 
-```
-       ┌──────────────────────────────────────┐
-       │                                      │
-       ▼                                      │
-  ┌─────────┐   activate()  ┌────────────┐    │
-  │ Inactive│─────────────► │ Activating │    │
-  └─────────┘               └────────────┘    │
-       ▲                          │           │
-       │                          │ done      │
-       │                          ▼           │
-       │                    ┌─────────┐       │
-       │    deactivate()    │  Active │       │
-       │◄───────────────────┴─────────┘       │
-       │                          │           │
-       │                          │           │
-       │                          ▼           │
-       │                   ┌──────────────┐   │
-       └───────────────────│ Deactivating │───┘
-               done        └──────────────┘
-```
-
 ## State Machine Design
 
 ```mermaid
