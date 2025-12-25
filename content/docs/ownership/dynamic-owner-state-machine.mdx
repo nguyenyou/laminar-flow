@@ -113,16 +113,15 @@ class DynamicOwner(onAccessAfterKilled: () => Unit) {
   /** Current state - transitions between singletons, no allocation */
   private var state: DynamicOwnerState = Inactive
 
-  /** Current owner reference - null when Inactive */
-  private var _currentOwner: OneTimeOwner = _
+  /** Current owner reference - None when Inactive */
+  private var _maybeCurrentOwner: Option[OneTimeOwner] = None
 
   /** Prepend counter - only meaningful during Activating state */
   private var _numPrependedSubs: Int = 0
 
   // ============ Public API ============
 
-  @inline def maybeCurrentOwner: Option[Owner] =
-    if (_currentOwner == null) None else Some(_currentOwner)
+  @inline def maybeCurrentOwner: Option[Owner] = _maybeCurrentOwner
 
   @inline def isActive: Boolean = state != Inactive
 
@@ -138,7 +137,8 @@ class DynamicOwner(onAccessAfterKilled: () => Unit) {
     state match {
       case Inactive =>
         Transaction.onStart.shared {
-          _currentOwner = new OneTimeOwner(onAccessAfterKilled)
+          val newOwner = new OneTimeOwner(onAccessAfterKilled)
+          _maybeCurrentOwner = Some(newOwner)
           _numPrependedSubs = 0
           state = Activating  // No allocation!
 
@@ -147,7 +147,7 @@ class DynamicOwner(onAccessAfterKilled: () => Unit) {
 
           while (i < originalNumSubs) {
             val ix = i + _numPrependedSubs
-            subscriptions(ix).onActivate(_currentOwner)
+            subscriptions(ix).onActivate(newOwner)
             i += 1
           }
 
@@ -175,10 +175,10 @@ class DynamicOwner(onAccessAfterKilled: () => Unit) {
         subscriptions.forEach(_.onDeactivate())
         removePendingSubscriptionsNow()
 
-        _currentOwner._killSubscriptions()
+        _maybeCurrentOwner.foreach(_._killSubscriptions())
         removePendingSubscriptionsNow()
 
-        _currentOwner = null
+        _maybeCurrentOwner = None
         state = Inactive  // No allocation!
 
       case Inactive =>
@@ -202,8 +202,8 @@ class DynamicOwner(onAccessAfterKilled: () => Unit) {
       subscriptions.push(subscription)
     }
 
-    if (_currentOwner != null) {
-      subscription.onActivate(_currentOwner)
+    _maybeCurrentOwner.foreach { owner =>
+      subscription.onActivate(owner)
     }
   }
 
@@ -254,7 +254,7 @@ state = Inactive    // No GC pressure
 private var state: DynamicOwnerState = Inactive
 
 // Mutable data - stored separately
-private var _currentOwner: OneTimeOwner = _
+private var _maybeCurrentOwner: Option[OneTimeOwner] = None
 private var _numPrependedSubs: Int = 0
 ```
 
