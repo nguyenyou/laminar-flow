@@ -3,6 +3,107 @@ title: Ownership
 description: Ownership is a pattern for managing resources.
 ---
 
+
+```mermaid
+classDiagram
+    direction TB
+    
+    class Owner {
+        <<trait>>
+        #subscriptions: JsArray~Subscription~
+        #killSubscriptions() void
+        #onOwned(subscription: Subscription) void
+        ~onKilledExternally(subscription: Subscription) void
+        ~own(subscription: Subscription) void
+    }
+    
+    class OneTimeOwner {
+        -_isKilledForever: Boolean
+        -onAccessAfterKilled: () => Unit
+        +isKilledForever: Boolean
+        ~own(subscription: Subscription) void
+        #killSubscriptions() void
+    }
+    
+    class ManualOwner {
+        +killSubscriptions() void
+    }
+    
+    class DynamicOwner {
+        -subscriptions: JsArray~DynamicSubscription~
+        -isSafeToRemoveSubscription: Boolean
+        -pendingSubscriptionRemovals: JsArray~DynamicSubscription~
+        -_maybeCurrentOwner: Option~Owner~
+        -numPrependedSubs: Int
+        -onAccessAfterKilled: () => Unit
+        +maybeCurrentOwner: Option~Owner~
+        +isActive: Boolean
+        +hasSubscriptions: Boolean
+        +numSubscriptions: Int
+        +activate() void
+        +deactivate() void
+        ~addSubscription(subscription: DynamicSubscription, prepend: Boolean) void
+        ~removeSubscription(subscription: DynamicSubscription) void
+    }
+    
+    class Subscription {
+        -_isKilled: Boolean
+        ~owner: Owner
+        -cleanup: () => Unit
+        +isKilled: Boolean
+        +kill() void
+        ~onKilledByOwner() void
+    }
+    
+    class DynamicSubscription {
+        -dynamicOwner: DynamicOwner
+        -activate: Owner => Option~Subscription~
+        -prepend: Boolean
+        -maybeCurrentSubscription: Option~Subscription~
+        +isOwnerActive: Boolean
+        +isOwnedBy(owner: DynamicOwner) Boolean
+        +kill() void
+        ~onActivate(owner: Owner) void
+        ~onDeactivate() void
+    }
+    
+    class DynamicSubscription_Companion {
+        <<object>>
+        +unsafe(dynamicOwner, activate, prepend) DynamicSubscription
+        +subscribeCallback(dynamicOwner, activate, prepend) DynamicSubscription
+        +subscribeObserver(dynamicOwner, observable, observer) DynamicSubscription
+        +subscribeSink(dynamicOwner, observable, sink) DynamicSubscription
+        +subscribeFn(dynamicOwner, observable, onNext) DynamicSubscription
+        +subscribeBus(dynamicOwner, eventStream, writeBus) DynamicSubscription
+    }
+    
+    class TransferableSubscription {
+        -activate: () => Unit
+        -deactivate: () => Unit
+        -maybeSubscription: Option~DynamicSubscription~
+        -isLiveTransferInProgress: Boolean
+        +hasOwner: Boolean
+        +isCurrentOwnerActive: Boolean
+        +setOwner(nextOwner: DynamicOwner) void
+        +clearOwner() void
+    }
+    
+    Owner <|-- OneTimeOwner : extends
+    Owner <|-- ManualOwner : extends
+    
+    Owner "1" *-- "*" Subscription : owns
+    DynamicOwner "1" *-- "*" DynamicSubscription : owns
+    DynamicOwner ..> OneTimeOwner : creates
+    
+    DynamicSubscription ..> Subscription : creates on activate
+    DynamicSubscription --> DynamicOwner : belongs to
+    
+    TransferableSubscription ..> DynamicSubscription : creates internally
+    TransferableSubscription --> DynamicOwner : can transfer between
+    
+    DynamicSubscription_Companion ..> DynamicSubscription : creates
+```
+
 ## Ownership
 
 Alright, this is it. By now you've read enough to have many questions about how ownership works. This assumes you've read all the docs above, but to recap the core problem that ownership solves:
